@@ -206,3 +206,44 @@ jobs:
             linux/VeilInstallerCli-linux
             macos/VeilInstaller.MacOS.zip
             windows/VeilInstalle*.exe
+
+  release-devbuild:
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-mac, build-windows]
+    if: github.ref == 'refs/heads/main' && github.repository == 'Gabriele73/VeilInstaller'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: VeilInstaller-linux
+          path: linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: VeilInstaller-macos
+          path: macos
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: VeilInstaller-windows
+          path: windows
+
+      - name: Get short SHA
+        id: release_values
+        run: echo "release_tag=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Upload DevBuild as release
+        run: |
+          gh release view devbuild >/dev/null 2>&1 || gh release create devbuild --target main --title "DevBuild" --notes "Automated build of latest main"
+          gh release upload devbuild --clobber linux/VeilInstallerCli-linux macos/VeilInstaller.MacOS.zip windows/VeilInstaller.exe windows/VeilInstallerCli.exe
+          gh release edit devbuild --title "DevBuild $RELEASE_TAG" --prerelease=false --latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ env.release_tag }}
+
