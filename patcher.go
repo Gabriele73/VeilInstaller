@@ -34,7 +34,7 @@ func init() {
 		Log.Debug("Using VENCORD_DIRECTORY")
 		VencordDirectory = dir
 	} else {
-		VencordDirectory = path.Join(BaseDir, "vencord.asar")
+		VencordDirectory = path.Join(BaseDir, "vencord")
 	}
 }
 

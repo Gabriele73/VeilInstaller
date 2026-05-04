@@ -15,7 +15,6 @@ import (
 	"os"
 	path "path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -111,7 +110,7 @@ func InitGithubDownloader() {
 		Log.Debug("Latest hash is", LatestHash, "Local Install is", Ternary(LatestHash == InstalledHash, "up to date!", "outdated!"))
 	}()
 
-	// either .asar file or directory with main.js file (in DEV)
+	// directory containing patcher.js (or main.js for legacy DEV installs)
 	VencordFile := VencordDirectory
 
 	stat, err := os.Stat(VencordFile)
@@ -119,9 +118,12 @@ func InitGithubDownloader() {
 		return
 	}
 
-	// dev
 	if stat.IsDir() {
-		VencordFile = path.Join(VencordFile, "main.js")
+		if IsDevInstall {
+			VencordFile = path.Join(VencordFile, "main.js")
+		} else {
+			VencordFile = path.Join(VencordFile, "patcher.js")
+		}
 	}
 
 	// Check hash of installed version if exists
@@ -152,48 +154,67 @@ func installLatestBuilds() (retErr error) {
 		return
 	}
 
-	downloadUrl := ""
+	requiredFiles := []string{"patcher.js", "preload.js", "renderer.js", "renderer.css"}
+
+	assets := make(map[string]string)
 	for _, ass := range ReleaseData.Assets {
-		if ass.Name == "desktop.asar" {
-			downloadUrl = ass.DownloadURL
-			break
+		assets[ass.Name] = ass.DownloadURL
+	}
+
+	for _, name := range requiredFiles {
+		if _, ok := assets[name]; !ok {
+			retErr = errors.New("Didn't find " + name + " download link")
+			Log.Error(retErr)
+			return
 		}
 	}
 
-	if downloadUrl == "" {
-		retErr = errors.New("Didn't find desktop.asar download link")
-		Log.Error(retErr)
-		return
-	}
-
-	Log.Debug("Downloading desktop.asar")
-
-	res, err := http.Get(downloadUrl)
-	if err == nil && res.StatusCode >= 300 {
-		err = errors.New(res.Status)
-	}
-	if err != nil {
-		Log.Error("Failed to download desktop.asar:", err)
-		retErr = err
-		return
-	}
-	out, err := os.OpenFile(VencordDirectory, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
+	if err := os.MkdirAll(VencordDirectory, 0755); err != nil {
 		Log.Error("Failed to create", VencordDirectory+":", err)
 		retErr = err
 		return
 	}
-	read, err := io.Copy(out, res.Body)
-	if err != nil {
-		Log.Error("Failed to download to", VencordDirectory+":", err)
-		retErr = err
-		return
+
+	legacyAsar := VencordDirectory + ".asar"
+	if _, err := os.Stat(legacyAsar); err == nil {
+		Log.Debug("Removing legacy", legacyAsar)
+		_ = os.Remove(legacyAsar)
 	}
-	contentLength := res.Header.Get("Content-Length")
-	expected := strconv.FormatInt(read, 10)
-	if expected != contentLength {
-		err = errors.New("Unexpected end of input. Content-Length was " + contentLength + ", but I only read " + expected)
-		Log.Error(err.Error())
+
+	for _, name := range requiredFiles {
+		Log.Debug("Downloading", name)
+
+		res, err := http.Get(assets[name])
+		if err == nil && res.StatusCode >= 300 {
+			err = errors.New(res.Status)
+		}
+		if err != nil {
+			Log.Error("Failed to download "+name+":", err)
+			retErr = err
+			return
+		}
+
+		outPath := path.Join(VencordDirectory, name)
+		out, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			res.Body.Close()
+			Log.Error("Failed to create", outPath+":", err)
+			retErr = err
+			return
+		}
+		_, err = io.Copy(out, res.Body)
+		res.Body.Close()
+		out.Close()
+		if err != nil {
+			Log.Error("Failed to write", outPath+":", err)
+			retErr = err
+			return
+		}
+	}
+
+	pkgPath := path.Join(VencordDirectory, "package.json")
+	if err := os.WriteFile(pkgPath, []byte(`{"name":"vencord","main":"patcher.js"}`), 0644); err != nil {
+		Log.Error("Failed to write package.json:", err)
 		retErr = err
 		return
 	}
