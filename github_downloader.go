@@ -15,9 +15,7 @@ import (
 	"net/http"
 	"os"
 	path "path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 )
 
 type GithubRelease struct {
@@ -112,8 +110,24 @@ func InitGithubDownloader() {
 		Log.Debug("Latest hash is", LatestHash, "Local Install is", Ternary(LatestHash == InstalledHash, "up to date!", "outdated!"))
 	}()
 
+	// directory containing patcher.js (or main.js for legacy DEV installs)
+	VencordFile := VencordDirectory
+
+	stat, err := os.Stat(VencordFile)
+	if err != nil {
+		return
+	}
+
+	if stat.IsDir() {
+		if IsDevInstall {
+			VencordFile = path.Join(VencordFile, "main.js")
+		} else {
+			VencordFile = path.Join(VencordFile, "patcher.js")
+		}
+	}
+
 	// Check hash of installed version if exists
-	f, err := os.Open(Patcher)
+	f, err := os.Open(VencordFile)
 	if err != nil {
 		return
 	}
@@ -136,66 +150,72 @@ func InitGithubDownloader() {
 func installLatestBuilds() (retErr error) {
 	Log.Debug("Installing latest builds...")
 
-	// create an empty package.json file in our files dir.
-	// without this, node will walk up the file tree and search for a package.json in the
-	// parent folders. This might lead to issues if the user for example has ~/package.json
-	// with type: "module" in it
-	pkgJsonFile := path.Join(FilesDir, "package.json")
-	err := os.WriteFile(pkgJsonFile, []byte("{}"), 0644)
-	if err != nil {
-		Log.Warn("Failed to create", pkgJsonFile, err)
+	requiredFiles := []string{"patcher.js", "preload.js", "renderer.js", "renderer.css"}
+
+	assets := make(map[string]string)
+	for _, ass := range ReleaseData.Assets {
+		assets[ass.Name] = ass.DownloadURL
 	}
 
-	var wg sync.WaitGroup
-
-	for _, ass := range ReleaseData.Assets {
-		if strings.HasPrefix(ass.Name, "patcher.js") ||
-			strings.HasPrefix(ass.Name, "preload.js") ||
-			strings.HasPrefix(ass.Name, "renderer.js") ||
-			strings.HasPrefix(ass.Name, "renderer.css") {
-			wg.Add(1)
-			ass := ass // Need to do this to not have the variable be overwritten halfway through
-			go func() {
-				defer wg.Done()
-				Log.Debug("Downloading file", ass.Name)
-
-				res, err := http.Get(ass.DownloadURL)
-				if err == nil && res.StatusCode >= 300 {
-					err = errors.New(res.Status)
-				}
-				if err != nil {
-					Log.Error("Failed to download", ass.Name+":", err)
-					retErr = err
-					return
-				}
-				outFile := path.Join(FilesDir, ass.Name)
-				out, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-				if err != nil {
-					Log.Error("Failed to create", outFile+":", err)
-					retErr = err
-					return
-				}
-				read, err := io.Copy(out, res.Body)
-				if err != nil {
-					Log.Error("Failed to download to", outFile+":", err)
-					retErr = err
-					return
-				}
-				contentLength := res.Header.Get("Content-Length")
-				expected := strconv.FormatInt(read, 10)
-				if expected != contentLength {
-					err = errors.New("Unexpected end of input. Content-Length was " + contentLength + ", but I only read " + expected)
-					Log.Error(err.Error())
-					retErr = err
-					return
-				}
-			}()
+	for _, name := range requiredFiles {
+		if _, ok := assets[name]; !ok {
+			retErr = errors.New("Didn't find " + name + " download link")
+			Log.Error(retErr)
+			return
 		}
 	}
 
-	wg.Wait()
-	Log.Debug("Done!")
-	_ = FixOwnership(FilesDir)
+	if err := os.MkdirAll(VencordDirectory, 0755); err != nil {
+		Log.Error("Failed to create", VencordDirectory+":", err)
+		retErr = err
+		return
+	}
+
+	legacyAsar := VencordDirectory + ".asar"
+	if _, err := os.Stat(legacyAsar); err == nil {
+		Log.Debug("Removing legacy", legacyAsar)
+		_ = os.Remove(legacyAsar)
+	}
+
+	for _, name := range requiredFiles {
+		Log.Debug("Downloading", name)
+
+		res, err := http.Get(assets[name])
+		if err == nil && res.StatusCode >= 300 {
+			err = errors.New(res.Status)
+		}
+		if err != nil {
+			Log.Error("Failed to download "+name+":", err)
+			retErr = err
+			return
+		}
+
+		outPath := path.Join(VencordDirectory, name)
+		out, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			res.Body.Close()
+			Log.Error("Failed to create", outPath+":", err)
+			retErr = err
+			return
+		}
+		_, err = io.Copy(out, res.Body)
+		res.Body.Close()
+		out.Close()
+		if err != nil {
+			Log.Error("Failed to write", outPath+":", err)
+			retErr = err
+			return
+		}
+	}
+
+	pkgPath := path.Join(VencordDirectory, "package.json")
+	if err := os.WriteFile(pkgPath, []byte(`{"name":"vencord","main":"patcher.js"}`), 0644); err != nil {
+		Log.Error("Failed to write package.json:", err)
+		retErr = err
+		return
+	}
+
+	_ = FixOwnership(VencordDirectory)
 
 	InstalledHash = LatestHash
 	return
