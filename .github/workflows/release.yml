@@ -241,7 +241,17 @@ jobs:
       - name: Upload DevBuild as release
         run: |
           gh release view devbuild >/dev/null 2>&1 || gh release create devbuild --target main --title "DevBuild" --notes "Automated build of latest main"
-          gh release upload devbuild --clobber linux/VeilInstallerCli-linux macos/VeilInstaller.MacOS.zip windows/VeilInstaller.exe windows/VeilInstallerCli.exe
+          for i in 1 2 3 4 5; do
+              if gh release upload devbuild --clobber linux/VeilInstallerCli-linux macos/VeilInstaller.MacOS.zip windows/VeilInstaller.exe windows/VeilInstallerCli.exe; then
+                  break
+              fi
+              if [ "$i" -eq 5 ]; then
+                  echo "Upload failed after 5 attempts" >&2
+                  exit 1
+              fi
+              echo "Upload attempt $i failed (likely transient GH 5xx), retrying in 15s..." >&2
+              sleep 15
+          done
           gh release edit devbuild --title "DevBuild $RELEASE_TAG" --prerelease=false --latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
