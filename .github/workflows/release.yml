@@ -84,21 +84,44 @@ jobs:
       - name: Install Go dependencies
         run: go get -v
 
-      - name: Build
-        run: CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -v -tags static -ldflags "-s -w -X 'vencordinstaller/buildinfo.InstallerGitHash=$(git rev-parse --short HEAD)' -X 'vencordinstaller/buildinfo.InstallerTag=${{ github.ref_name }}'" -o VeilInstaller
+      - name: Build amd64
+        run: CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -v -tags static -ldflags "-s -w -X 'vencordinstaller/buildinfo.InstallerGitHash=$(git rev-parse --short HEAD)' -X 'vencordinstaller/buildinfo.InstallerTag=${{ github.ref_name }}'" -o VeilInstaller-amd64
 
-      - name: Update executable
+      - name: Build arm64
+        run: CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -v -tags static -ldflags "-s -w -X 'vencordinstaller/buildinfo.InstallerGitHash=$(git rev-parse --short HEAD)' -X 'vencordinstaller/buildinfo.InstallerTag=${{ github.ref_name }}'" -o VeilInstaller-arm64
+
+      - name: Create universal binary
         run: |
+          lipo -create -output VeilInstaller VeilInstaller-amd64 VeilInstaller-arm64
           chmod +x VeilInstaller
 
       - name: Generate MacOS bundle
+        # Bundle layout MUST match `CFBundleExecutable` in macos/Info.plist
+        # (set to `VeilInstaller`). If those drift apart, Launch Services
+        # rejects the bundle with "you can't open the application
+        # because it may be damaged or incomplete".
         run: |
           mkdir -p VeilInstaller.app/Contents/MacOS
           mkdir -p VeilInstaller.app/Contents/Resources
           cp macos/Info.plist VeilInstaller.app/Contents/Info.plist
           mv VeilInstaller VeilInstaller.app/Contents/MacOS/VeilInstaller
           cp macos/icon.icns VeilInstaller.app/Contents/Resources/icon.icns
-          zip -r VeilInstaller.MacOS.zip VeilInstaller.app
+
+      - name: Ad-hoc codesign
+        # Apple Silicon refuses to launch unsigned arm64 binaries with
+        # the same "damaged or incomplete" error users see on x86. An
+        # ad-hoc signature (sign with the local "-" identity) is enough
+        # to satisfy Gatekeeper for distribution outside the App Store.
+        # `--deep --force` re-signs every nested binary in the bundle.
+        run: codesign --force --deep --sign - VeilInstaller.app
+
+      - name: Zip bundle
+        # `ditto` preserves macOS metadata (resource forks, extended
+        # attributes, code-signature blobs) that plain `zip` strips on
+        # some macOS versions, leaving the unzipped bundle missing its
+        # signature. `ditto -c -k --keepParent` is the documented
+        # recipe for shipping a signed .app over the wire.
+        run: ditto -c -k --keepParent VeilInstaller.app VeilInstaller.MacOS.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
