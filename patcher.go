@@ -17,6 +17,7 @@ import (
 
 var BaseDir string
 var VencordDirectory string
+var FilesDirErr error
 
 func init() {
 	if dir := os.Getenv("VENCORD_USER_DATA_DIR"); dir != "" {
