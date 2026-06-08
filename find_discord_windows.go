@@ -87,6 +87,8 @@ func FindDiscords() []any {
 	return discords
 }
 
+func ParseDiscordNew(p, branch string, isFlatpak bool) *DiscordInstall { return nil }
+
 func PreparePatch(di *DiscordInstall) {
 	killLock.Lock()
 	defer killLock.Unlock()
